@@ -6,7 +6,7 @@ SmartFlow is an **intelligent, decentralized traffic signal control system** dev
 
 ## 📖 Project Overview
 
-Traditional traffic signal systems operate on static schedules, often causing **“ghost waiting”**—vehicles stopped at red lights despite no cross-traffic. This leads to unnecessary delays, increased fuel consumption, and higher emissions.
+Traditional traffic signal systems operate on static schedules, often causing **“ghost waiting”** vehicles stopped at red lights despite no cross-traffic. This leads to unnecessary delays, increased fuel consumption and higher emissions.
 
 **SmartFlow** addresses these issues by modeling each intersection as an **Intelligent Utility-Based Agent** that dynamically adapts to traffic conditions using FSM-based logic and inter-agent communication.
 
