@@ -88,14 +88,14 @@ SmartFlow agents follow a **Sense–Think–Act** cycle implemented through a **
 
 ### 2️⃣ Install Dependencies
 
-'''bash
+```bash
 pip install spade
-'''
+```
 
 ### 3️⃣ Run the System
 
-'''bash
+```bash
 python traffic_agent.py
-'''
+```
 
 ⚠️ Ensure the Openfire server is running before executing the agent.
