@@ -57,7 +57,8 @@ class SmartFlowAgent(Agent):
             env.intersection_locked = True
             
             # --- SIMULATION TIMER TRAFFIC (10s) ---
-            duration = 5 
+            # The parameter can be adjusted everytime for simulation
+            duration = 10 
             queue_at_start = env.lanes[self.agent.direction]
             
             print(f"\n[{self.agent.jid}] >>> GREEN: {self.agent.direction}")
