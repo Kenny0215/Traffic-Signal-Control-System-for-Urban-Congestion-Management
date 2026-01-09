@@ -1,138 +1,188 @@
-import random
-import time
-import asyncio
-import threading
+"""
+PROJECT: SmartFlow AI - Multi-Agent Adaptive Traffic Signal Control
+COURSE: BAXI 3113 Intelligent Agent (Phase 3 Final Implementation)
+"""
+
+import random, time, asyncio, threading, json
 from spade.agent import Agent
-from spade.behaviour import FSMBehaviour, State
+from spade.behaviour import FSMBehaviour, State, CyclicBehaviour
 from spade.message import Message
+from spade.template import Template
 
 # ==========================================================
-# 1: THE SIMULATION (The Environment)
+# Phase 1 : THE INTELLIGENT ENVIRONMENT
 # ==========================================================
-class TrafficEnvironment:
+class SmartEnvironment:
     def __init__(self):
         self.lanes = {'NORTH': 0, 'EAST': 0, 'SOUTH': 0, 'WEST': 0}
-        self.current_light = 'ALL_RED'
-        self.emergency_flag = False
-        self.total_throughput = 0
+        self.intersection_locked = False 
+        self.emergency_target = None  
+        self.total_passed = 0
+
+        for lane in self.lanes:
+            self.lanes[lane] = random.randint(15, 25)
 
     def spawn_traffic(self):
         lane = random.choice(['NORTH', 'EAST', 'SOUTH', 'WEST'])
-        self.lanes[lane] += random.randint(1, 3)
+        # Spawning 10-20 cars per arrival to maintain pressure in a fast cycle
+        self.lanes[lane] += random.randint(10, 20) 
 
-    def clear_traffic(self, lane):
+    def clear_traffic(self, lane, capacity):
         if self.lanes[lane] > 0:
-            passed = min(self.lanes[lane], 5)
+            passed = min(self.lanes[lane], capacity)
             self.lanes[lane] -= passed
-            self.total_throughput += passed
+            self.total_passed += passed
             return passed
         return 0
 
-env = TrafficEnvironment()
+env = SmartEnvironment()
 
 # ==========================================================
-# 2: THE INTELLIGENT AGENT (SPADE Framework)
+# Phase 2 : THE DIRECTIONAL AGENT (Hybrid Architecture)
 # ==========================================================
 class SmartFlowAgent(Agent):
-    
-    class TrafficFSM(FSMBehaviour):
-        async def on_start(self):
-            print(f"[{self.agent.jid}] Starting Decision Engine ...")
+    def __init__(self, jid, password, direction, next_agent_jid):
+        super().__init__(jid, password)
+        self.direction = direction
+        self.next_agent = next_agent_jid
+        self.fsm_active = False 
+        self.last_turn_efficiency = 0 
 
     class StateGreen(State):
         async def run(self):
-            print("\n--- NEW DECISION CYCLE ---")
+            # Coordination: Wait for Safety Lock
+            while env.intersection_locked:
+                await asyncio.sleep(0.2)
+
+            env.intersection_locked = True
             
-            # 1. PERCEPTION
-            if env.emergency_flag:
-                print("[PERCEPTION] !! EMERGENCY VEHICLE DETECTED !!")
-                target_lane = 'NORTH'
-                env.emergency_flag = False
+            # --- SIMULATION TIMER TRAFFIC (10s) ---
+            duration = 5 
+            queue_at_start = env.lanes[self.agent.direction]
+            
+            print(f"\n[{self.agent.jid}] >>> GREEN: {self.agent.direction}")
+            
+            # Simulates realistic discharge rates (not all cars clear in one turn)
+            friction_factor = random.uniform(0.65, 0.90)
+            physical_capacity = int(queue_at_start * friction_factor)
+            
+            # Minimum clearance for very small queues
+            if queue_at_start < 5: physical_capacity = queue_at_start
+
+            passed = env.clear_traffic(self.agent.direction, physical_capacity)
+            
+            if queue_at_start > 0:
+                self.agent.last_turn_efficiency = int((passed / queue_at_start) * 100)
             else:
-                # 2. SEQUENCE LOGIC
-                target_lane = self.agent.order[self.agent.current_idx]
-                # Save this as the 'active' lane so other states can see it
-                self.agent.last_lane = target_lane 
-                
-                print(f"[DECISION] Fixed Sequence: Current turn is {target_lane}")
-                
-                # Update index for the NEXT lane
-                self.agent.current_idx = (self.agent.current_idx + 1) % 4
-
-            # 3. ACTION
-            env.current_light = f"{target_lane}_GREEN"
-            print(f"[ACTION] Signal switched to {env.current_light}")
+                self.agent.last_turn_efficiency = 100
             
-            # 4. EXECUTION
-            print(f"[STATUS] Cars waiting in {target_lane}: {env.lanes[target_lane]}")
-            passed = env.clear_traffic(target_lane)
-            print(f"[EXECUTION] {passed} cars passed. Total Throughput: {env.total_throughput}")
-
-            await asyncio.sleep(3) 
+            print(f"[{self.agent.jid}] ACTION: Cleared {passed}/{queue_at_start} cars. (Wait: {duration}s)")
+            
+            # Preemption Check Loop (Runs for 10s unless interrupted)
+            for _ in range(duration * 2):
+                if env.emergency_target and env.emergency_target != self.agent.direction:
+                    print(f"[{self.agent.jid}] !!! PREEMPTION: Ending Green early for Emergency !!!")
+                    break
+                await asyncio.sleep(0.5)
+            
             self.set_next_state("STATE_YELLOW")
 
     class StateYellow(State):
         async def run(self):
-            current_lane = self.agent.last_lane # Get the lane that was just green
-            env.current_light = f"{current_lane}_YELLOW"
-            print(f"[SAFETY] Transitioning: {env.current_light} (Warning)")
+            print(f"[{self.agent.jid}] TRANSITION: {self.agent.direction} YELLOW")
             await asyncio.sleep(2)
             self.set_next_state("STATE_RED")
 
     class StateRed(State):
         async def run(self):
-            # 1. Identify current vs next
-            stopped_lane = self.agent.last_lane
-            next_lane = self.agent.order[self.agent.current_idx]
+            print(f"[{self.agent.jid}] SAFETY: {self.agent.direction} RED")
             
-            # 2. Update environment
-            env.current_light = f"{stopped_lane}_RED"
+            # Emergency Reset
+            if env.emergency_target == self.agent.direction:
+                print(f"[{self.agent.jid}] EMERGENCY CLEARED. Resuming cycle.")
+                env.emergency_target = None
             
-            # 3. Print specific handover message as requested
-            print(f"[STATUS] {stopped_lane} is now RED. Passing control to {next_lane}...")
+            env.intersection_locked = False
+            self.agent.fsm_active = False 
+
+            # COORDINATION: Multi-agent Handover
+            if not env.emergency_target:
+                msg = Message(to=self.agent.next_agent)
+                msg.set_metadata("performative", "inform")
+                msg.body = "YOUR_TURN"
+                await self.send(msg)
             
-            await asyncio.sleep(1) # Brief clearance interval
-            self.set_next_state("STATE_GREEN")
+            # Performance Measure Report
+            print(f"[{self.agent.jid}] THROUGHPUT: {env.total_passed} cars | CLEARANCE EFFICIENCY: {self.agent.last_turn_efficiency}%")
+
+    def start_logic(self):
+        if not self.fsm_active:
+            self.fsm_active = True
+            fsm = FSMBehaviour()
+            fsm.add_state(name="STATE_GREEN", state=self.StateGreen(), initial=True)
+            fsm.add_state(name="STATE_YELLOW", state=self.StateYellow())
+            fsm.add_state(name="STATE_RED", state=self.StateRed())
+            fsm.add_transition(source="STATE_GREEN", dest="STATE_YELLOW")
+            fsm.add_transition(source="STATE_YELLOW", dest="STATE_RED")
+            self.add_behaviour(fsm)
+
+    class MainListener(CyclicBehaviour):
+        async def run(self):
+            # Listen for turn messages
+            msg = await self.receive(timeout=0.5)
+            if msg and "YOUR_TURN" in msg.body:
+                if not env.emergency_target:
+                    self.agent.start_logic()
+            
+            # Listen for siren sense
+            if env.emergency_target == self.agent.direction:
+                self.agent.start_logic()
 
     async def setup(self):
-        self.order = ['NORTH', 'EAST', 'SOUTH', 'WEST']
-        self.current_idx = 0
-        self.last_lane = 'NORTH' # Initial placeholder
-        
-        fsm = self.TrafficFSM()
-        fsm.add_state(name="STATE_GREEN", state=self.StateGreen(), initial=True)
-        fsm.add_state(name="STATE_YELLOW", state=self.StateYellow())
-        fsm.add_state(name="STATE_RED", state=self.StateRed())
-        
-        fsm.add_transition(source="STATE_GREEN", dest="STATE_YELLOW")
-        fsm.add_transition(source="STATE_YELLOW", dest="STATE_RED")
-        fsm.add_transition(source="STATE_RED", dest="STATE_GREEN")
-        
-        self.add_behaviour(fsm)
+        self.add_behaviour(self.MainListener())
 
 # ==========================================================
-# 3: EXECUTION
+# Phase 3 : EXECUTION
 # ==========================================================
-
-def run_background_sim():
+def run_physics():
     while True:
         env.spawn_traffic()
-        if random.random() < 0.05:
-            env.emergency_flag = True
-        time.sleep(5)
+        time.sleep(1.5) # Fast spawning for a fast simulation
 
 async def main():
-    sim_thread = threading.Thread(target=run_background_sim, daemon=True)
-    sim_thread.start()
-
-    agent = SmartFlowAgent("traffic_agent@127.0.0.1", "password123")
-    await agent.start()
+    try:
+        with open('config.json', 'r') as f:
+            config = json.load(f)
+    except FileNotFoundError:
+        print("Error: config.json not found!")
+        return
     
+    password = config["xmpp_password"]
+    jids = config["agents"]
+
+    print("--- SmartFlow AI - Multi-Agent Adaptive Traffic Signal Control ---")
+    threading.Thread(target=run_physics, daemon=True).start()
+
+    agents = {
+        "NORTH": SmartFlowAgent(jids["NORTH"], password, "NORTH", jids["EAST"]),
+        "EAST":  SmartFlowAgent(jids["EAST"],  password, "EAST",  jids["SOUTH"]),
+        "SOUTH": SmartFlowAgent(jids["SOUTH"], password, "SOUTH", jids["WEST"]),
+        "WEST":  SmartFlowAgent(jids["WEST"],  password, "WEST",  jids["NORTH"])
+    }
+    
+    for a in agents.values(): await a.start()
+    await asyncio.sleep(2)
+    agents["NORTH"].start_logic()
+
     try:
         while True:
-            await asyncio.sleep(1)
+            # Siren triggers every 25 seconds for the demo
+            await asyncio.sleep(25) 
+            target = random.choice(['NORTH', 'EAST', 'SOUTH', 'WEST'])
+            print(f"\n[SYSTEM] SIREN: EMERGENCY ON {target} ROAD!")
+            env.emergency_target = target 
     except KeyboardInterrupt:
-        await agent.stop()
+        for a in agents.values(): await a.stop()
 
 if __name__ == "__main__":
     asyncio.run(main())
